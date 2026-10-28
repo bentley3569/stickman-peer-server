@@ -295,6 +295,7 @@
   <div id="screen-online" class="screen hidden">
     <h1>ONLINE MATCH</h1>
     <p class="subtitle">Quick match or private room</p>
+    <div id="net-diag" style="font-size:.6em;color:#7d86a6;margin:0 0 .3em;text-align:center;max-width:44em">Server: checking…</div>
     <div id="queue-quick" style="font-size:.8em;font-weight:800;color:#4de3c1;margin:0 0 .4em;letter-spacing:.05em">⚡ 0 in the quick-match queue</div>
     <div id="online-status"></div>
     <button class="menu-btn accent" onclick="pickChar(function(){startQuick(false)},'screen-online')">⚡ QUICK MATCH</button>
@@ -517,9 +518,10 @@ loadPeerLib();
    ONLINE SERVER CONFIG  <<< EDIT THIS AFTER YOU DEPLOY peer-server/ >>>
    Put your deployed server's hostname below (no https://), e.g.
    'stickman-peer-server.onrender.com'. Leave '' to use only the public cloud.
-   When set, the game uses ONLY your server (so all players find each other).
+   The game checks your server first and silently falls back to the public
+   PeerJS cloud if yours can't be reached.
    ============================================================ */
-var MY_PEER_HOST = 'stickman-peer-server-1.onrender.com';            // <-- e.g. 'stickman-peer-server.onrender.com'
+var MY_PEER_HOST = 'stickman-peer-server-1.onrender.com';   // <-- hostname of your deployed game-server (no https://). Deploy the game-server/ folder, then put its hostname here.
 var MY_PEER_PATH = '/peerjs';
 var ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -532,32 +534,14 @@ var ICE_SERVERS = [
   { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
   { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
-/* Always use YOUR server when MY_PEER_HOST is set (everyone must use the same one to find each other).
-   The ping below just wakes a sleeping free server as soon as the page opens. */
-function probeMyServer() {
-  if (!MY_PEER_HOST) return;
-  try { fetch('https://' + MY_PEER_HOST + '/health', { cache: 'no-store' }).catch(function () {}); } catch (e) {}
-}
+/* PeerJS (public cloud) is now only used for the optional developer extras: polls, spectating, gifting coins.
+   Matches, quick match, ranked and the online counters all go through YOUR game server (game-server/ folder, WebSocket). */
+var peerSettled = true;
+function peerReady() { return Promise.resolve(); }
 function newPeer(id) {
   var opts = { config: { iceServers: ICE_SERVERS, iceCandidatePoolSize: 4 }, debug: 0 };
-  if (MY_PEER_HOST) { opts.host = MY_PEER_HOST; opts.port = 443; opts.path = MY_PEER_PATH; opts.secure = true; opts.key = 'peerjs'; }
   return id === undefined ? new Peer(undefined, opts) : new Peer(id, opts);
 }
-function netErr(e) {
-  var t = e && e.type;
-  if (t === 'network' || t === 'server-error' || t === 'socket-error' || t === 'socket-closed')
-    return 'Can\'t reach the game server' + (MY_PEER_HOST ? ' (it may be waking up — wait 30 seconds and try again)' : ' — the public server is down. Set up your own server (see DEPLOY.md)') + '.';
-  return 'Error: ' + t;
-}
-probeMyServer();
-/* live "online" + queue numbers straight from your server (reliable; the old peer-to-peer counter is the fallback) */
-var serverOnline = 0, serverQ = {}, serverAt = 0;
-function serverFresh() { return Date.now() - serverAt < 20000; }
-function pollOnline() {
-  if (!MY_PEER_HOST) return;
-  try { fetch('https://' + MY_PEER_HOST + '/online', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { serverOnline = Math.max(0, d.n | 0); serverQ = d.q || {}; serverAt = Date.now(); }).catch(function () {}); } catch (e) {}
-}
-setInterval(pollOnline, 4000); pollOnline();
 </script>
 <script>
 /* ============================================================
@@ -2417,47 +2401,89 @@ let peer = null, conn = null, qmTries = 0;
 const LOBBY = 'stickman_quick_lobby';
 let lobbyId = LOBBY;
 function setStatus(t) { $('online-status').innerHTML = t; const r = $('ranked-status'); if (r) r.innerHTML = t; }
-function closeNet() { presSet('i', ''); stopReporting(); try { conn && conn.close(); } catch (e) {} try { peer && peer.destroy(); } catch (e) {} conn = null; peer = null; }
+
+/* ---------- game server link (WebSocket) ----------
+   One socket stays open to the game server. It pairs players (quick match / ranked / room codes), relays every message between the
+   two fighters in a match, and tells everyone how many players are online and in each queue. */
+let ws = null, wsOpen = false, wsId = '', wsWait = [], wsBackoff = 1000, wsWant = false, wsTimer = null, wsEverOpen = false, wsWoke = false;
+const wsUrl = () => 'wss://' + MY_PEER_HOST + '/ws';
+function wsSend(o) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(o)); return true; } catch (e) {} } return false; }
+function wsConnect() {
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  clearTimeout(wsTimer);
+  if (!wsWoke) { wsWoke = true; try { fetch('https://' + MY_PEER_HOST + '/health', { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) {} }   // a plain HTTP hit wakes a sleeping free host faster
+  let sk; try { sk = ws = new WebSocket(wsUrl()); } catch (e) { wsTimer = setTimeout(wsConnect, 3000); return; }
+  sk.onopen = () => { if (ws !== sk) return; wsOpen = true; wsEverOpen = true; wsBackoff = 1000; const w = wsWait; wsWait = []; w.forEach(f => { try { f(); } catch (e) {} }); showNetDiag(); };
+  sk.onmessage = ev => { if (ws !== sk) return; let m; try { m = JSON.parse(ev.data); } catch (e) { return; } wsMsg(m); };
+  sk.onclose = () => { if (ws !== sk) return; wsOpen = false; ws = null; wsId = ''; presAt = 0; wsLost(); showNetDiag(); wsTimer = setTimeout(wsConnect, wsBackoff); wsBackoff = Math.min(8000, wsBackoff * 1.7); };
+  sk.onerror = () => {};
+}
+function wsLost() {   // the socket dropped: a running match is lost, a search is cancelled
+  if (conn && conn.open) conn.end(true);
+  if (wsWant) { wsWant = false; setStatus('Lost the connection to the game server.<br>Press the button to try again.'); }
+}
+function wsMsg(m) {
+  if (!m || typeof m !== 'object') return;
+  if (m.t === 'id') { wsId = cleanStr(m.id, 40); return; }
+  if (m.t === 'pc') {
+    const q = {}; if (m.q && typeof m.q === 'object') Object.keys(m.q).slice(0, 30).forEach(k => { if (k.indexOf('stickman_') === 0 && k.length < 60) q[k] = num(m.q[k], 0, 0, 99999); });
+    presData = { n: num(m.n, 0, 0, 99999), q }; presAt = Date.now(); renderOnline(); renderQueue(); return;
+  }
+  if (m.t === 'code') { if (wsWant === 'host') setStatus('Room code: <b>' + cleanStr(m.code, 8) + '</b><br>Waiting for your friend…'); return; }
+  if (m.t === 'err') { if (wsWant === 'join') { wsWant = false; setStatus('Room not found. Check the code (the host must still be waiting).'); } return; }
+  if (m.t === 'match') {
+    if (!wsWant || (conn && conn.open)) { wsSend({ t: 'leave' }); return; }   // we already backed out: refuse this late match
+    wsWant = false; attach(new WSConn(cleanStr(m.opp, 40) || 'opp')); return;
+  }
+  if (m.t === 'oppleft') { if (conn && conn.open) conn.end(false); return; }
+  if (m.t === 'rel') { if (conn && conn.open && m.d && typeof m.d === 'object') conn.emit('data', m.d); }
+}
+/* a tiny stand-in for a PeerJS connection, so the rest of the game code did not need to change */
+class WSConn {
+  constructor(opp) { this.peer = opp; this.open = true; this.h = {}; }
+  on(ev, fn) { this.h[ev] = fn; return this; }
+  emit(ev, a) { const f = this.h[ev]; if (f) { try { f(a); } catch (e) {} } }
+  send(o) { if (this.open) wsSend({ t: 'rel', d: o }); }
+  close() { if (this.open) { this.open = false; wsSend({ t: 'leave' }); } }
+  end(lost) { if (!this.open) return; this.open = false; this.emit('close', !!lost); }
+}
+function closeNet() {
+  wsWant = false; wsWait = []; stopReporting();
+  try { if (conn && conn.open) conn.close(); else wsSend({ t: 'leave' }); } catch (e) {}   // leaves any queue / waiting room / match
+  conn = null; peer = null;
+}
+function presSet() {}   // the game server already knows who is searching or in a match
 function netOK(retry) {
-  if (typeof Peer !== 'undefined') return true;
-  setStatus('Loading network library…');
-  loadPeerLib().then(ok => { if (ok) { if (retry) retry(); } else setStatus('Network library failed to load.<br>Check your connection or ad-blocker, then try again.'); });
+  wsConnect();
+  if (wsOpen) return true;
+  setStatus(wsEverOpen ? 'Reconnecting to the game server…' : 'Waking up the game server… (the first time can take up to a minute)');
+  if (retry && !wsWait.includes(retry)) wsWait.push(retry);
   return false;
 }
+function showNetDiag() {
+  const el = $('net-diag'); if (!el) return;
+  el.textContent = wsOpen ? 'Server: connected \u2714' : wsEverOpen ? 'Server: reconnecting…' : 'Server: connecting… (the first time can take up to a minute)';
+}
+setInterval(showNetDiag, 1000);
 function hostOnlineGame() {
   if (!netOK(hostOnlineGame)) return; isRanked = false; isQuick = false; closeNet(); audio();
-  const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-  peer = newPeer('stickman_' + code);
-  peer.on('open', () => setStatus(`Room code: <b>${code}</b><br>Waiting for your friend…`));
-  peer.on('connection', attach);
-  peer.on('error', e => { if (e.type === 'unavailable-id') hostOnlineGame(); else setStatus(netErr(e)); });
+  wsWant = 'host'; setStatus('Creating a room…'); wsSend({ t: 'host' });
 }
 function joinOnlineGame() {
   if (!netOK(joinOnlineGame)) return; const code = $('room-code-input').value.trim().toUpperCase();
   if (code.length < 4) { setStatus('Enter the 4-character room code.'); return; }
-  isRanked = false; isQuick = false; closeNet(); audio(); setStatus('Connecting…'); peer = newPeer();
-  peer.on('open', () => attach(peer.connect('stickman_' + code, { reliable: true })));
-  peer.on('error', e => setStatus(e.type === 'peer-unavailable' ? 'Room not found.' : 'Error: ' + e.type));
+  isRanked = false; isQuick = false; closeNet(); audio();
+  wsWant = 'join'; setStatus('Joining room ' + cleanStr(code, 8) + '…'); wsSend({ t: 'join', code });
 }
 function startQuick(ranked) {
   if (ranked && playerData.level < RANKED_LEVEL) { setStatus('Ranked unlocks at level ' + RANKED_LEVEL + '.'); return; }
-  isRanked = ranked; isQuick = !ranked; qmTries = 0;
+  isRanked = ranked; isQuick = !ranked;
   lobbyId = ranked ? 'stickman_ranked_' + rankIdx(playerData.rating) : LOBBY;
   quickMatch();
 }
 function quickMatch() {
-  if (!netOK(quickMatch)) return; closeNet(); audio(); qmTries++;
-  if (qmTries > 4) { qmTries = 0; setStatus('Could not find a match. Try again!'); return; }
-  presSet('q', lobbyId);   // counts as 'in queue' for everyone's queue display
-  setStatus('Searching for an opponent…'); peer = newPeer();
-  peer.on('open', () => attach(peer.connect(lobbyId, { reliable: true })));
-  peer.on('error', e => { if (e.type === 'peer-unavailable') { try { peer.destroy(); } catch (_) {} hostLobby(); } else setStatus(netErr(e)); });
-}
-function hostLobby() {
-  peer = newPeer(lobbyId);
-  peer.on('open', () => setStatus(isRanked ? 'Waiting for a ranked opponent…' : 'Waiting in the quick-match lobby…<br>(a friend can press Quick Match too)'));
-  peer.on('connection', attach);
-  peer.on('error', e => { if (e.type === 'unavailable-id') quickMatch(); else setStatus(netErr(e)); });
+  if (!netOK(quickMatch)) return; closeNet(); audio();
+  wsWant = 'q'; setStatus(isRanked ? 'Searching for a ranked opponent…' : 'Searching for an opponent…<br>(a friend can press Quick Match too)'); wsSend({ t: 'q', key: lobbyId });
 }
 let oppInfo = null;
 function sendHello() { try { if (conn && conn.open) conn.send({ t: 'h', rk: isRanked, rt: playerData.rating, lv: playerData.level, ch: playerData.char, ul: isRanked ? 'neo' : playerData.char, cm: playerData.cameo, tt: myTitleId(), co: coatOn() ? 1 : 0, un: ACCT.name || '' }); } catch (e) {} }
@@ -2472,11 +2498,11 @@ function showOppName() {
 }
 function attach(c) {
   if (conn && conn.open) { try { c.close(); } catch (e) {} return; }
-  conn = c; oppInfo = null; let began = false;
-  const begin = () => { if (began) return; began = true; qmTries = 0; setStatus('Connected!'); startGame('online'); startReporting(); presSet('m', ''); };
+  conn = c; peer = { id: wsId || 'me', destroy() {} }; oppInfo = null; let began = false;
+  const begin = () => { if (began) return; began = true; setStatus('Connected!'); startGame('online'); startReporting(); presSet('m', ''); };
   c.on('open', begin); if (c.open) begin();
   c.on('data', onNetData);
-  c.on('close', () => { if (mode === 'online' && (phase === 'fight' || phase === 'intro')) finishMatch(true); });
+  c.on('close', lost => { if (mode === 'online' && (phase === 'fight' || phase === 'intro')) finishMatch(!lost); });   // opponent left = you win; YOUR connection dropped = you lose
   c.on('error', () => {});
 }
 function onNetData(d) {
@@ -3012,89 +3038,24 @@ function renderPoll() {
    Every player links to a shared hub peer. Whoever finds no hub claims it (same trick as the quick-match lobby); if the hub leaves,
    the rest elect a new one within a few seconds. The hub counts everyone and broadcasts the numbers.
    ============================================================ */
-const PRES_HUB = 'stickman_presence_hub_v1';
-let presPeer = null, presConn = null, presHub = false, presMembers = {}, presConns = {}, presSt = 'i', presKey = '', presAt = 0, presStartAt = 0, presRetry = null, presData = { n: 0, q: {} };
-function presSet(st, key) { presSt = st; presKey = key || ''; presPush(); }
-function presPush() {
-  if (presHub) { presMembers.self = { st: presSt, key: presKey }; return; }
-  if (presConn && presConn.open) { try { presConn.send({ t: 'ps', st: presSt, key: presKey }); } catch (e) {} }
-}
-function presCompute() {
-  const q = {}; let n = 0;
-  for (const k in presMembers) { n++; const m = presMembers[k]; if (m.st === 'q' && m.key) q[m.key] = (q[m.key] || 0) + 1; }
-  return { n, q };
-}
-function presBroadcast() {
-  if (!presHub) return;
-  presData = presCompute(); presAt = Date.now(); renderOnline(); renderQueue();
-  for (const k in presConns) { const c = presConns[k]; if (c && c.open) { try { c.send({ t: 'pc', n: presData.n, q: presData.q }); } catch (e) {} } }
-}
-function presRestartSoon() {
-  clearTimeout(presRetry);
-  try { presPeer && presPeer.destroy(); } catch (e) {}
-  presPeer = presConn = null; presHub = false; presMembers = {}; presConns = {};
-  presRetry = setTimeout(presStart, 500 + Math.random() * 2500);
-}
-function presStart() {
-  if (presPeer || typeof Peer === 'undefined') return;
-  presStartAt = Date.now();
-  try {
-    const pp = presPeer = newPeer();
-    pp.on('open', () => {
-      if (presPeer !== pp) return;
-      presConn = pp.connect(PRES_HUB, { reliable: true });
-      presConn.on('open', presPush);
-      presConn.on('data', d => {
-        if (!d || d.t !== 'pc') return;
-        const q = {}; if (d.q && typeof d.q === 'object') Object.keys(d.q).slice(0, 30).forEach(k => { if (k.indexOf('stickman_') === 0 && k.length < 60) q[k] = num(d.q[k], 0, 0, 99999); });
-        presData = { n: num(d.n, 0, 0, 99999), q }; presAt = Date.now(); renderOnline(); renderQueue();
-      });
-      presConn.on('close', presRestartSoon); presConn.on('error', () => {});
-    });
-    pp.on('disconnected', () => { try { pp.reconnect(); } catch (e) {} });
-    pp.on('error', e => { if (presPeer !== pp) return; if (e.type === 'peer-unavailable') presBecomeHub(); else if (e.type !== 'network') presRestartSoon(); });
-  } catch (e) { presPeer = null; }
-}
-function presBecomeHub() {   // nobody is running the hub: we do
-  try { presPeer && presPeer.destroy(); } catch (e) {}
-  presPeer = presConn = null;
-  let hp; try { hp = newPeer(PRES_HUB); } catch (e) { presRestartSoon(); return; }
-  presPeer = hp;
-  hp.on('open', () => { if (presPeer !== hp) return; presHub = true; presMembers = { self: { st: presSt, key: presKey } }; presConns = {}; presBroadcast(); });
-  hp.on('connection', c => {
-    c.on('data', d => {
-      if (!d || d.t !== 'ps' || !presHub) return;
-      const first = !presMembers[c.peer], st = ['i', 'q', 'm'].includes(d.st) ? d.st : 'i';
-      if (first && Object.keys(presMembers).length > 3000) return;
-      presMembers[c.peer] = { st, key: cleanStr(d.key, 59) }; presConns[c.peer] = c;
-      if (first) { presBroadcast(); }
-    });
-    c.on('close', () => { delete presMembers[c.peer]; delete presConns[c.peer]; });
-    c.on('error', () => {});
-  });
-  hp.on('disconnected', () => { try { hp.reconnect(); } catch (e) {} });
-  hp.on('error', e => { if (presPeer !== hp) return; if (e.type === 'unavailable-id') presRestartSoon(); else if (e.type !== 'network') presRestartSoon(); });
-}
-setInterval(() => {
-  if (presHub) presBroadcast();
-  else if (presPeer && Date.now() - (presAt || presStartAt) > 15000) presRestartSoon();   // linked to a hub that went quiet, or never got a link
-}, 2000);
+let presAt = 0, presData = { n: 0, q: {} };   // filled in by the game server link (wsMsg)
 const presFresh = () => presAt > 0 && Date.now() - presAt < 25000;
 function renderOnline() {
   const el = $('online-count'); if (!el) return;
   const show = $('hud').classList.contains('hidden');
   el.style.display = show ? 'block' : 'none';
-  if (show) el.textContent = '🟢 ' + (serverFresh() ? serverOnline : presFresh() ? presData.n : 0) + ' ONLINE';
+  if (show) el.textContent = '🟢 ' + (presFresh() ? presData.n : 0) + ' ONLINE';
 }
 function renderQueue() {
-  const q = serverFresh() ? serverQ : presFresh() ? presData.q : {}, a = $('queue-quick'), b = $('queue-ranked');
+  const q = presFresh() ? presData.q : {}, a = $('queue-quick'), b = $('queue-ranked');
   if (a) a.textContent = '⚡ ' + (q[LOBBY] || 0) + ' in the quick-match queue';
   if (b) { let tot = 0; for (const k in q) if (k.indexOf('stickman_ranked_') === 0) tot += q[k]; b.textContent = '⚔ ' + (q['stickman_ranked_' + rankIdx(playerData.rating)] || 0) + ' in your rank queue · ' + tot + ' in ranked total'; }
 }
 setInterval(() => { renderOnline(); renderQueue(); }, 1000);
 renderOnline(); renderQueue();
 setInterval(() => { const b = $('poll-box'); if (b) b.style.top = $('hud').classList.contains('hidden') ? '.6em' : '6.2em'; }, 300);   // top right; drops below the health bars during a fight
-loadPeerLib().then(ok => { if (ok) { presStart(); if (!devMode) startPollLink(); else startRegistry(); } });
+loadPeerLib().then(ok => { if (ok) { if (!devMode) startPollLink(); else startRegistry(); } });
+wsConnect();   // open the link to the game server right away (also wakes it up if it was asleep)
 
 if (devMode) enableDevUI();
 
@@ -3240,7 +3201,7 @@ function startUserPeer() {
     try { up.destroy(); } catch (_) {} userPeer = null; setTimeout(startUserPeer, 30000);
   });
 }
-loadPeerLib().then(ok => { if (ok) startUserPeer(); });
+Promise.all([loadPeerLib(), peerReady()]).then(r => { if (r[0]) startUserPeer(); });
 if (!ACCT.session()) showLogin();
 </script>
 </body>

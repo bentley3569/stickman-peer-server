@@ -1,13 +1,9 @@
 {
-  "name": "stickman-arena-peer-server",
+  "name": "stickman-arena-server",
   "version": "1.0.0",
-  "description": "Always-on PeerJS signaling server for Stickman Arena",
+  "description": "Matchmaking + relay server for Stickman Arena Online",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "engines": { "node": ">=18" },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "peer": "^1.0.2"
-  }
+  "dependencies": { "ws": "^8.18.0" }
 }
