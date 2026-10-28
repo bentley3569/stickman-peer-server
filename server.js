@@ -1,102 +1,153 @@
-/* Stickman Arena Online - matchmaking + relay server.
-   Players connect with a WebSocket to /ws. The server pairs them (quick match, ranked, or room code),
-   then relays each player's messages to the other. It also counts who is online / in each queue.
-   Run:  npm install && npm start   (uses $PORT, default 8080) */
+'use strict';
+/* Stickman Arena game server (WebSocket).
+   - quick match / ranked queues, 4-letter room codes, relay between the two fighters
+   - online + queue counters
+   - developer tools: live-match feed, spectate toys, polls, gifting coins
+   Deploy: `npm install` then `npm start`. Optional env: PORT, DEV_KEY (plain dev passcode; if unset the passcode hash below is used). */
 const http = require('http');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
-const PORT = process.env.PORT || 8080;
-const fs = require('fs');
-const path = require('path');
-const GAME = path.join(__dirname, 'index.html');   // if the game file sits next to this server, players can just open the site URL
+const PORT = process.env.PORT || 3000;
+const DEV_KEY = process.env.DEV_KEY || '';
+const DEV_HASH = 5178711972820204, DEV_SALT = 'sa_dev_v1:';
+function cyrb53(s, seed = 0) {
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0, c; i < s.length; i++) { c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+function devKeyOK(k) {
+  if (typeof k !== 'string' || !k || k.length > 100) return false;
+  if (DEV_KEY) { const a = Buffer.from(k), b = Buffer.from(DEV_KEY); return a.length === b.length && crypto.timingSafeEqual(a, b); }
+  return cyrb53(DEV_SALT + k) === DEV_HASH;
+}
+
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  const url = (req.url || '/').split('?')[0];
-  if (url === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return; }
-  if (url === '/' || url === '/index.html') {
-    fs.readFile(GAME, (err, data) => {
-      if (err) { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return; }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }); res.end(data);
-    });
-    return;
-  }
-  res.writeHead(404); res.end();
+  res.writeHead(req.url === '/health' || req.url === '/' ? 200 : 404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+  res.end(req.url === '/health' || req.url === '/' ? 'ok' : 'not found');
 });
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 8192 });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
 
 const clients = new Set();
-const queues = new Map();   // queue key -> [client, ...] waiting
-const rooms = new Map();    // room code -> hosting client
-const KEY_RE = /^stickman_[A-Za-z0-9_]{1,40}$/;
-const CODE_RE = /^[A-Z0-9]{4}$/;
+const queues = new Map();     // key -> waiting client
+const rooms = new Map();      // code -> hosting client
+const gifts = new Map();      // gift id -> { dev, user, t }
+let poll = null;              // { id, q, opts, votes: Map(vid -> option), active }
+let watching = false;
 
-const newId = () => crypto.randomBytes(5).toString('hex');
-function send(c, o) { if (c.ws.readyState === 1) { try { c.ws.send(JSON.stringify(o)); } catch (e) {} } }
+const send = (c, o) => { if (c && c.ws.readyState === 1) { try { c.ws.send(JSON.stringify(o)); } catch (e) {} } };
+const devs = () => [...clients].filter(c => c.dev);
+const uid = () => crypto.randomBytes(6).toString('hex');
+const str = (v, n) => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, n) : '';
 
-function leaveAll(c) {   // remove from queue / room / current match, telling the opponent
-  if (c.qkey) { const q = queues.get(c.qkey); if (q) { const i = q.indexOf(c); if (i >= 0) q.splice(i, 1); if (!q.length) queues.delete(c.qkey); } c.qkey = null; }
-  if (c.room) { if (rooms.get(c.room) === c) rooms.delete(c.room); c.room = null; }
+function updateWatch() {
+  const on = devs().length > 0;
+  if (on !== watching) { watching = on; clients.forEach(c => send(c, { t: 'watch', on })); }
+}
+function pollStat() {
+  if (!poll) return null;
+  const counts = poll.opts.map(() => 0); poll.votes.forEach(o => { counts[o]++; });
+  return { t: 'pollstat', id: poll.id, q: poll.q, opts: poll.opts, counts, active: poll.active };
+}
+function leave(c) {
+  if (c.key && queues.get(c.key) === c) queues.delete(c.key); c.key = '';
+  if (c.room && rooms.get(c.room) === c) rooms.delete(c.room); c.room = '';
   if (c.opp) { const o = c.opp; c.opp = null; if (o.opp === c) { o.opp = null; send(o, { t: 'oppleft' }); } }
 }
-function pair(a, b) {
-  leaveAll(a); leaveAll(b);   // clears queue/room state first
-  a.opp = b; b.opp = a;
-  send(a, { t: 'match', opp: b.id });
-  send(b, { t: 'match', opp: a.id });
-}
-function counts() {
-  const q = {}; for (const [k, v] of queues) q[k] = v.length;
-  return { t: 'pc', n: clients.size, q };
-}
+function pair(a, b) { a.opp = b; b.opp = a; a.key = b.key = ''; send(a, { t: 'match', opp: b.id }); send(b, { t: 'match', opp: a.id }); }
+function newCode() { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; for (let n = 0; n < 50; n++) { let s = ''; for (let i = 0; i < 4; i++) s += A[Math.floor(Math.random() * A.length)]; if (!rooms.has(s)) return s; } return ''; }
 
 wss.on('connection', ws => {
-  const c = { ws, id: newId(), opp: null, qkey: null, room: null, alive: true, msgs: 0 };
+  if (clients.size > 3000) { ws.close(); return; }
+  const c = { ws, id: uid(), key: '', room: '', opp: null, un: '', vid: '', dev: false, fails: 0, alive: true, win: 0, cnt: 0 };
   clients.add(c);
-  send(c, { t: 'id', id: c.id }); send(c, counts());
+  send(c, { t: 'id', id: c.id }); send(c, { t: 'watch', on: watching });
+  if (poll && poll.active) send(c, { t: 'poll', id: poll.id, q: poll.q, opts: poll.opts });
   ws.on('pong', () => { c.alive = true; });
   ws.on('message', raw => {
-    if (++c.msgs > 500) { ws.close(1008, 'rate'); return; }   // 500 msgs/s is far above normal (~70/s)
+    const now = Date.now(); if (now - c.win > 1000) { c.win = now; c.cnt = 0; } if (++c.cnt > 400) return;   // flood guard
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
     if (!m || typeof m !== 'object') return;
     switch (m.t) {
       case 'rel': if (c.opp && m.d && typeof m.d === 'object') send(c.opp, { t: 'rel', d: m.d }); break;
+      case 'leave': leave(c); break;
       case 'q': {
-        if (typeof m.key !== 'string' || !KEY_RE.test(m.key)) return;
-        leaveAll(c);
-        const q = queues.get(m.key) || [];
-        let other = null;
-        while (q.length) { const x = q.shift(); if (x !== c && x.ws.readyState === 1 && x.qkey === m.key) { other = x; break; } }
-        if (!q.length) queues.delete(m.key); else queues.set(m.key, q);
-        if (other) pair(other, c);
-        else { c.qkey = m.key; const q2 = queues.get(m.key) || []; q2.push(c); queues.set(m.key, q2); }
+        const key = str(m.key, 50); if (key.indexOf('stickman_') !== 0) break; leave(c);
+        const w = queues.get(key);
+        if (w && w !== c && w.ws.readyState === 1) { queues.delete(key); pair(w, c); } else { queues.set(key, c); c.key = key; }
         break;
       }
-      case 'host': {
-        leaveAll(c);
-        let code, tries = 0;
-        do { code = Array.from(crypto.randomBytes(4), b => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join(''); } while (rooms.has(code) && ++tries < 20);
-        rooms.set(code, c); c.room = code; send(c, { t: 'code', code });
-        break;
-      }
+      case 'host': { leave(c); const code = newCode(); if (!code) break; rooms.set(code, c); c.room = code; send(c, { t: 'code', code }); break; }
       case 'join': {
-        const code = typeof m.code === 'string' ? m.code.toUpperCase() : '';
-        const host = CODE_RE.test(code) ? rooms.get(code) : null;
-        if (!host || host === c || host.opp || host.ws.readyState !== 1) { send(c, { t: 'err', e: 'nocode' }); return; }
-        rooms.delete(code); host.room = null; pair(host, c);
+        const code = str(m.code, 8).toUpperCase(), h = rooms.get(code); leave(c);
+        if (!h || h === c || h.ws.readyState !== 1) { send(c, { t: 'err' }); break; }
+        rooms.delete(code); h.room = ''; pair(h, c); break;
+      }
+      case 'reg': { const u = str(m.un, 16).toLowerCase(); c.un = /^[a-z0-9_]{3,16}$/.test(u) ? u : ''; c.vid = str(m.vid, 40); break; }
+      case 'giftack': {
+        const g = gifts.get(str(m.id, 40)); if (!g || g.user !== c.un) break; gifts.delete(str(m.id, 40));
+        send(g.dev, { t: 'giftres', id: str(m.id, 40), ok: 1, name: str(m.name, 16) || c.un }); break;
+      }
+      case 'v': {   // a player votes
+        if (!poll || !poll.active || m.id !== poll.id) break;
+        const vid = str(m.vid, 40), o = Math.floor(+m.o);
+        if (!vid || !isFinite(o) || o < 0 || o >= poll.opts.length || poll.votes.has(vid) || poll.votes.size > 20000) break;
+        poll.votes.set(vid, o); const s = pollStat(); devs().forEach(d => send(d, s)); break;
+      }
+      case 'rep': {   // live fighter state from a player in a match -> developers
+        if (!watching || !m.s || typeof m.s !== 'object' || m.pid !== c.id || typeof m.mid !== 'string' || m.mid.length > 120 || m.mid.split('|').indexOf(c.id) < 0) break;
+        const d = { t: 'r', mid: m.mid, pid: c.id, rk: !!m.rk, nm: str(m.nm, 16), un: str(m.un, 16), lv: m.lv, rt: m.rt, s: m.s };
+        devs().forEach(dv => send(dv, { t: 'dr', d })); break;
+      }
+      case 'devauth': {
+        if (devKeyOK(m.key)) { c.dev = true; c.fails = 0; send(c, { t: 'devok' }); const s = pollStat(); if (s) send(c, s); updateWatch(); }
+        else { send(c, { t: 'deverr' }); if (++c.fails >= 5) ws.close(); }
         break;
       }
-      case 'leave': leaveAll(c); break;
+      case 'devoff': c.dev = false; updateWatch(); break;
+      default: if (c.dev) devCmd(c, m);
     }
   });
-  const gone = () => { leaveAll(c); clients.delete(c); };
-  ws.on('close', gone); ws.on('error', () => {});
+  ws.on('close', () => { leave(c); clients.delete(c); if (c.dev) updateWatch(); });
+  ws.on('error', () => {});
 });
 
-setInterval(() => { for (const c of clients) c.msgs = 0; }, 1000);
-setInterval(() => {   // heartbeat: drop dead sockets (also keeps the connection alive through proxies)
-  for (const c of clients) { if (!c.alive) { try { c.ws.terminate(); } catch (e) {} continue; } c.alive = false; try { c.ws.ping(); } catch (e) {} }
-}, 25000);
-setInterval(() => { const p = counts(); for (const c of clients) send(c, p); }, 2000);
+function devCmd(c, m) {
+  switch (m.t) {
+    case 'dcmd': {   // message / boost / heal to the players of a match
+      const ids = Array.isArray(m.to) ? m.to.slice(0, 2).map(x => str(x, 40)) : [], d = m.d && typeof m.d === 'object' ? m.d : null;
+      let n = 0; if (d) clients.forEach(p => { if (ids.indexOf(p.id) >= 0) { send(p, { t: 'dcmd', d }); n++; } });
+      send(c, { t: 'dcres', n }); break;
+    }
+    case 'gift': {
+      const id = str(m.id, 40), user = str(m.user, 16).toLowerCase(), amt = Math.floor(+m.amt);
+      if (!id || !isFinite(amt) || amt < 1 || amt > 100000) break;
+      const target = [...clients].find(p => p.un && p.un === user);
+      if (!target) { send(c, { t: 'giftres', id, ok: 0, why: 'is not online right now.' }); break; }
+      gifts.set(id, { dev: c, user, t: Date.now() }); send(target, { t: 'gift', id, amt }); break;
+    }
+    case 'pollset': {
+      const id = str(m.id, 40), q = str(m.q, 80), opts = Array.isArray(m.opts) ? m.opts.slice(0, 4).map(o => str(o, 30)).filter(Boolean) : [];
+      if (!id || !q || opts.length < 2) break;
+      poll = { id, q, opts, votes: new Map(), active: true };
+      clients.forEach(p => send(p, { t: 'poll', id, q, opts }));
+      devs().forEach(d => { send(d, { t: 'pollres', n: clients.size }); send(d, pollStat()); }); break;
+    }
+    case 'pollend': {
+      if (!poll || !poll.active || m.id !== poll.id) break; poll.active = false;
+      const s = pollStat(); clients.forEach(p => send(p, { t: 'pollend', id: poll.id, counts: s.counts })); devs().forEach(d => send(d, s)); break;
+    }
+  }
+}
 
-server.listen(PORT, () => console.log('Stickman Arena server listening on ' + PORT));
+setInterval(() => {   // online counter + queue sizes
+  const q = {}; queues.forEach((c, k) => { q[k] = 1; });
+  const msg = { t: 'pc', n: clients.size, q };
+  clients.forEach(c => send(c, msg));
+  const now = Date.now(); gifts.forEach((g, k) => { if (now - g.t > 20000) gifts.delete(k); });
+}, 2000);
+setInterval(() => { clients.forEach(c => { if (!c.alive) { try { c.ws.terminate(); } catch (e) {} return; } c.alive = false; try { c.ws.ping(); } catch (e) {} }); }, 30000);
+
+server.listen(PORT, () => console.log('Stickman game server on :' + PORT));

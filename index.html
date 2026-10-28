@@ -375,7 +375,7 @@
     <h4>TITLES</h4>
     <div class="row"><button class="dbtn" onclick="devUnlockTitles()">UNLOCK ALL</button>
       <button class="dbtn ghost" onclick="devResetTitles()">RESET MINE</button></div>
-    <div class="row">Tester ID <input type="text" id="dev-tid" maxlength="12" placeholder="PLAYER ID" autocomplete="off" style="width:9em;letter-spacing:.1em;text-align:left;font-size:1em;padding:.3em;margin:0">
+    <div class="row">Tester ID <input type="text" id="dev-tid" maxlength="18" placeholder="ID or @USER" autocomplete="off" style="width:9em;letter-spacing:.1em;text-align:left;font-size:1em;padding:.3em;margin:0">
       <button class="dbtn pink" onclick="devMakeTesterCode()">MAKE CODE</button></div>
     <div id="dev-tcode" style="color:#4de3c1;font-weight:800;letter-spacing:.1em;font-size:.9em;min-height:1.2em;user-select:text;-webkit-user-select:text"></div>
     <div style="color:#7d86a6;font-size:.75em;margin-bottom:.3em">Dev titles (DEVELOPER, ARCHITECT) appear in the TITLES screen while dev mode is unlocked.</div>
@@ -386,7 +386,7 @@
     <div class="row"><input type="text" id="give-user" maxlength="16" placeholder="USERNAME" autocomplete="off" style="width:9em;letter-spacing:.05em;text-align:left;font-size:1em;padding:.3em;margin:0">
       <input type="number" id="give-amt" min="1" max="100000" value="100"> <button class="dbtn pink" onclick="devGiveCoins()">SEND</button></div>
     <div id="give-msg" style="color:#ffd400;font-size:.85em;min-height:1.2em"></div>
-    <div style="color:#7d86a6;font-size:.75em;margin-bottom:.3em">They must be signed in and online right now. Coins are created for them (they don't come out of your balance). Needs the registry running in this tab (the status at the top of this panel should say Registry online).</div>
+    <div style="color:#7d86a6;font-size:.75em;margin-bottom:.3em">They must be signed in and online right now. Coins are created for them (they don't come out of your balance). The status at the top of this panel must say Registry online.</div>
     <h4>UPDATE TIMER</h4>
     <div class="row"><button class="dbtn" id="dev-timer-toggle" onclick="devToggleUpdateTimer()">TIMER: OFF</button>
       <span id="dev-timer-readout" style="color:#ffd400;font-size:.85em"></span></div>
@@ -489,31 +489,6 @@
 <div id="rotate">↻ Rotate your phone for the best experience</div>
 
 <script>
-/* PeerJS loader with CDN fallbacks */
-var PEER_CDNS = [
-  'https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.4.7/peerjs.min.js',
-  'https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js'
-];
-var peerLoading = null;
-function loadPeerLib() {
-  if (typeof Peer !== 'undefined') return Promise.resolve(true);
-  if (peerLoading) return peerLoading;
-  peerLoading = new Promise(function (resolve) {
-    var i = 0;
-    (function next() {
-      if (typeof Peer !== 'undefined') return resolve(true);
-      if (i >= PEER_CDNS.length) { peerLoading = null; return resolve(false); }
-      var sc = document.createElement('script');
-      sc.src = PEER_CDNS[i++];
-      sc.onload = function () { typeof Peer !== 'undefined' ? resolve(true) : next(); };
-      sc.onerror = function () { sc.remove(); next(); };
-      document.head.appendChild(sc);
-    })();
-  });
-  return peerLoading;
-}
-loadPeerLib();
 /* ============================================================
    ONLINE SERVER CONFIG  <<< EDIT THIS AFTER YOU DEPLOY peer-server/ >>>
    Put your deployed server's hostname below (no https://), e.g.
@@ -523,25 +498,7 @@ loadPeerLib();
    ============================================================ */
 var MY_PEER_HOST = 'stickman-peer-server-1.onrender.com';   // <-- hostname of your deployed game-server (no https://). Deploy the game-server/ folder, then put its hostname here.
 var MY_PEER_PATH = '/peerjs';
-var ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:global.stun.twilio.com:3478' },
-  /* TURN relay (needed for some phone/school/strict networks). Free open relay: */
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-];
-/* PeerJS (public cloud) is now only used for the optional developer extras: polls, spectating, gifting coins.
-   Matches, quick match, ranked and the online counters all go through YOUR game server (game-server/ folder, WebSocket). */
-var peerSettled = true;
-function peerReady() { return Promise.resolve(); }
-function newPeer(id) {
-  var opts = { config: { iceServers: ICE_SERVERS, iceCandidatePoolSize: 4 }, debug: 0 };
-  return id === undefined ? new Peer(undefined, opts) : new Peer(id, opts);
-}
+/* Everything online (matches, counters, polls, live games, coin gifts) goes through the game server WebSocket. */
 </script>
 <script>
 /* ============================================================
@@ -668,10 +625,13 @@ function myVid() {
   try { let v = localStorage.getItem('stickman_vid'); if (!v || v.length > 40) { v = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('stickman_vid', v); } return v; }
   catch (e) { return 'tmp' + Math.random().toString(36).slice(2); }
 }
-function shortId() { return cyrb53('sa_id:' + myVid()).toString(36).toUpperCase().padStart(8, '0').slice(-8); }
+const idFrom = t => cyrb53(t).toString(36).toUpperCase().padStart(8, '0').slice(-8);
+function legacyId() { return idFrom('sa_id:' + myVid()); }
+function idForUser(u) { return idFrom('sa_uid:' + String(u).toLowerCase()); }
+function shortId() { const a = ACCT.session(); return a ? idForUser(a) : legacyId(); }
 function testerCodeFor(id) { const n = cyrb53(TSALT + String(id).toUpperCase().replace(/[^A-Z0-9]/g, '')).toString(36).toUpperCase().padStart(10, '0').slice(-10); return n; }
 function fmtCode(c) { return c.slice(0, 5) + '-' + c.slice(5); }
-function isTester() { return !!playerData.tcode && playerData.tcode === testerCodeFor(shortId()); }
+function isTester() { return !!playerData.tcode && (playerData.tcode === testerCodeFor(shortId()) || playerData.tcode === testerCodeFor(legacyId())); }
 function isDev() { try { return !!devMode; } catch (e) { return false; } }
 function coatOn() { return isDev() && playerData.costume === 'coat'; }
 function devCoatLabel() { const b = $('dev-coat'); if (b) { b.textContent = 'CRIMSON COAT: ' + (coatOn() ? 'ON' : 'OFF'); b.classList.toggle('pink', coatOn()); } }
@@ -775,7 +735,7 @@ function redeemTester() {
   const m = $('title-msg'), raw = $('tester-code').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (isTester()) { m.textContent = 'You already have the TESTER title.'; return; }
   if (raw.length !== 10) { m.textContent = 'Codes have 10 characters (XXXXX-XXXXX).'; return; }
-  if (raw === testerCodeFor(shortId())) {
+  if (raw === testerCodeFor(shortId()) || raw === testerCodeFor(legacyId())) {
     playerData.tcode = raw; playerData.title = 'tester'; savePlayer(); updateXPUI(); renderTitles();
     m.textContent = 'TESTER title unlocked and equipped!'; $('tester-code').value = '';
   } else m.textContent = 'Invalid code. Each code only works for the player ID it was made for.';
@@ -2413,9 +2373,9 @@ function wsConnect() {
   clearTimeout(wsTimer);
   if (!wsWoke) { wsWoke = true; try { fetch('https://' + MY_PEER_HOST + '/health', { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) {} }   // a plain HTTP hit wakes a sleeping free host faster
   let sk; try { sk = ws = new WebSocket(wsUrl()); } catch (e) { wsTimer = setTimeout(wsConnect, 3000); return; }
-  sk.onopen = () => { if (ws !== sk) return; wsOpen = true; wsEverOpen = true; wsBackoff = 1000; const w = wsWait; wsWait = []; w.forEach(f => { try { f(); } catch (e) {} }); showNetDiag(); };
+  sk.onopen = () => { if (ws !== sk) return; wsOpen = true; wsEverOpen = true; wsBackoff = 1000; try { wsHello(); } catch (e) {} const w = wsWait; wsWait = []; w.forEach(f => { try { f(); } catch (e) {} }); showNetDiag(); };
   sk.onmessage = ev => { if (ws !== sk) return; let m; try { m = JSON.parse(ev.data); } catch (e) { return; } wsMsg(m); };
-  sk.onclose = () => { if (ws !== sk) return; wsOpen = false; ws = null; wsId = ''; presAt = 0; wsLost(); showNetDiag(); wsTimer = setTimeout(wsConnect, wsBackoff); wsBackoff = Math.min(8000, wsBackoff * 1.7); };
+  sk.onclose = () => { if (ws !== sk) return; wsOpen = false; ws = null; wsId = ''; presAt = 0; devAuthed = false; repOn = false; wsLost(); showNetDiag(); wsTimer = setTimeout(wsConnect, wsBackoff); wsBackoff = Math.min(8000, wsBackoff * 1.7); };
   sk.onerror = () => {};
 }
 function wsLost() {   // the socket dropped: a running match is lost, a search is cancelled
@@ -2424,6 +2384,7 @@ function wsLost() {   // the socket dropped: a running match is lost, a search i
 }
 function wsMsg(m) {
   if (!m || typeof m !== 'object') return;
+  if (wsDevMsg(m)) return;
   if (m.t === 'id') { wsId = cleanStr(m.id, 40); return; }
   if (m.t === 'pc') {
     const q = {}; if (m.q && typeof m.q === 'object') Object.keys(m.q).slice(0, 30).forEach(k => { if (k.indexOf('stickman_') === 0 && k.length < 60) q[k] = num(m.q[k], 0, 0, 99999); });
@@ -2584,33 +2545,36 @@ setInterval(() => {
    Players quietly send their fighter state to the developer's
    registry peer, if it happens to be online. No registry = nothing happens.
    ============================================================ */
-const REG_ID = 'stickman_reg_dd6f5e0ce26d';
-let regPeer = null, regConn = null, regTick = 0, regLastTry = 0, matchId = '';
-function startReporting() {
-  stopReporting();
-  if (typeof Peer === 'undefined' || !peer || !conn || !peer.id || !conn.peer) return;
-  matchId = [peer.id, conn.peer].sort().join('|');
-  try {
-    regPeer = newPeer();
-    regPeer.on('open', connectReg);
-    regPeer.on('error', () => {});
-  } catch (e) { regPeer = null; }
-}
-function connectReg() {
-  regLastTry = Date.now();
-  try { regConn = regPeer.connect(REG_ID, { reliable: true }); regConn.on('error', () => {}); regConn.on('data', onDevCmd); } catch (e) { regConn = null; }
-}
-function stopReporting() { try { regPeer && regPeer.destroy(); } catch (e) {} regPeer = regConn = null; }
-setInterval(() => {
-  if (mode !== 'online' || !regPeer || !p1 || phase === 'over') return;
-  if (regConn && regConn.open) {
-    if (++regTick % 2) return;
-    try {
-      regConn.send({ t: 'r', mid: matchId, pid: peer.id, rk: isRanked, nm: myTitleName(), un: ACCT.name || '', lv: playerData.level, rt: playerData.rating,
-        s: { x: p1.x, y: p1.y, f: p1.facing, a: p1.anim, n: p1.animT, i: p1.aid, s: p1.side, h: p1.hp, m: p1.maxHp, mt: p1.meter } });
-    } catch (e) {}
-  } else if (regPeer.open && Date.now() - regLastTry > 8000) connectReg();   // dev came online later
+let repOn = false, regTick = 0, matchId = '', devAuthT = null;
+function startReporting() { stopReporting(); if (!conn || !wsId || !conn.peer) return; matchId = [wsId, conn.peer].sort().join('|'); regTick = 0; }
+function stopReporting() { matchId = ''; }
+setInterval(() => {   // the server tells us (watch) whether a developer is listening, so nothing is sent otherwise
+  if (mode !== 'online' || !repOn || !matchId || !wsOpen || !p1 || phase === 'over') return;
+  if (++regTick % 2) return;
+  wsSend({ t: 'rep', mid: matchId, pid: wsId, rk: isRanked, nm: myTitleName(), un: ACCT.name || '', lv: playerData.level, rt: playerData.rating,
+    s: { x: p1.x, y: p1.y, f: p1.facing, a: p1.anim, n: p1.animT, i: p1.aid, s: p1.side, h: p1.hp, m: p1.maxHp, mt: p1.meter } });
 }, 33);
+/* messages from the game server that belong to the developer tools / polls / gifts */
+function wsHello() {
+  if (ACCT.session()) wsSend({ t: 'reg', un: ACCT.session(), vid: myVid() });
+  if (devMode) devAuth();
+}
+function wsDevMsg(m) {
+  switch (m.t) {
+    case 'watch': repOn = !!m.on; return true;
+    case 'devok': clearTimeout(devAuthT); devAuthed = true; setDevStatus('Registry online \u2714 \u2014 watching for games'); return true;
+    case 'deverr': clearTimeout(devAuthT); devAuthed = false; setDevStatus('The game server rejected the dev key. Press LOCK DEV MODE, then unlock again.'); return true;
+    case 'dr': onRegData(m.d); return true;
+    case 'dcmd': if (m.d && typeof m.d === 'object') onDevCmd(m.d); return true;
+    case 'dcres': { const n = num(m.n, 0, 0, 9), t = $('toy-sent'); if (t) t.textContent = n ? 'Sent to ' + n + ' player' + (n > 1 ? 's' : '') + ' \u2714' : 'Could not reach that player (they may have left).'; return true; }
+    case 'poll': case 'pollend': onPollMsg(m); return true;
+    case 'pollstat': onPollStat(m); return true;
+    case 'pollres': { const n = num(m.n, 0, 0, 99999); setDevStatus('Poll started \u00b7 sent to ' + n + ' player' + (n === 1 ? '' : 's') + ' (anyone who joins later gets it too)'); return true; }
+    case 'gift': onGift(m); return true;
+    case 'giftres': if (giveWait && giveWait.id === m.id) giveFinish(!!m.ok, m.ok ? (cleanStr(m.name, 16) || giveWait.name) : (cleanStr(m.why, 60) || 'is not online right now.')); return true;
+  }
+  return false;
+}
 
 /* ============================================================
    DEVELOPER MODE
@@ -2624,7 +2588,7 @@ function cyrb53(s, seed = 0) {
 }
 const DEV_HASH = 5178711972820204;          // cyrb53('sa_dev_v1:' + passcode)
 const DEV_SALT = 'sa_dev_v1:';
-let devMode = false, devPeer = null, liveMatches = {}, spectating = null, devListTimer = null;
+let devMode = false, devAuthed = false, liveMatches = {}, spectating = null, devListTimer = null;
 try { devMode = String(localStorage.getItem('stickman_dev')) === String(DEV_HASH); } catch (e) {}
 
 // secret unlock: tap the title 5 times
@@ -2637,18 +2601,17 @@ $('title-logo').addEventListener('click', () => {
 function tryDevLogin() {
   const v = $('dev-pass').value.trim();
   if (cyrb53(DEV_SALT + v) === DEV_HASH) {
-    devMode = true; try { localStorage.setItem('stickman_dev', String(DEV_HASH)); } catch (e) {}
+    devMode = true; try { localStorage.setItem('stickman_dev', String(DEV_HASH)); localStorage.setItem('stickman_devkey', v); } catch (e) {}
     enableDevUI(); showScreen('screen-menu');
   } else { $('dev-login-msg').textContent = 'Wrong passcode.'; $('dev-pass').value = ''; }
 }
 function devLogout() {
-  devMode = false; try { localStorage.removeItem('stickman_dev'); } catch (e) {}
+  devMode = false; devAuthed = false; try { localStorage.removeItem('stickman_dev'); localStorage.removeItem('stickman_devkey'); } catch (e) {}
   if (spectating) exitSpectate();
-  try { devPeer && devPeer.destroy(); } catch (e) {} devPeer = null; liveMatches = {};
+  wsSend({ t: 'devoff' }); liveMatches = {};
   $('devbtn').style.display = 'none'; $('dev-panel').style.display = 'none'; clearInterval(devListTimer);
 }
 function enableDevUI() {
-  stopPollLink();   // the dev runs the registry, so no need to connect to it as a player
   $('devbtn').style.display = 'block';
   $('dev-level').value = playerData.level; $('dev-rating').value = playerData.rating;
   startRegistry();
@@ -2668,9 +2631,15 @@ function devSetLevel(forced) {
 function devUnlockTitles() { ACH.forEach(a => { if (!playerData.titles.includes(a.id)) playerData.titles.push(a.id); }); savePlayer(); setDevStatus('All earned titles unlocked'); }
 function devResetTitles() { playerData.titles = []; playerData.title = ''; playerData.tcode = ''; Object.keys(playerData.stats).forEach(k => playerData.stats[k] = 0); savePlayer(); updateXPUI(); setDevStatus('Your titles and stats were reset'); }
 function devMakeTesterCode() {
-  const id = $('dev-tid').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (id.length < 6) { $('dev-tcode').textContent = 'Paste the tester\'s player ID first.'; return; }
-  $('dev-tcode').textContent = 'CODE for ' + id + ': ' + fmtCode(testerCodeFor(id));
+  const inp = $('dev-tid').value.trim(), out = $('dev-tcode');
+  let id;
+  if (inp[0] === '@') {
+    const u = inp.slice(1).trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(u)) { out.textContent = 'Usernames are 3-16 letters, numbers or _ (example: @mike_99).'; return; }
+    id = idForUser(u);
+  } else id = inp.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (id.length < 6) { out.textContent = 'Paste the tester\'s player ID, or type @username.'; return; }
+  out.textContent = 'CODE for ' + id + ': ' + fmtCode(testerCodeFor(id));
 }
 function devSetCoins() {
   const c = clamp(Math.floor(+$('dev-coins').value || 0), 0, 999999);
@@ -2685,20 +2654,17 @@ function devSetRating() {
 const ANIMS = ['idle', 'run', 'jump', 'block', 'punch', 'kick', 'special', 'hit', 'ko', 'win', 'crouch', 'flame', 'slash', 'tele', 'grab', 'upper', 'thrown', 'down', 'roll'];
 const num = (v, d, lo, hi) => { v = +v; return isFinite(v) ? clamp(v, lo, hi) : d; };
 function startRegistry() {
-  if (!devMode || devPeer || typeof Peer === 'undefined') { if (typeof Peer === 'undefined') setDevStatus('Network library not loaded.'); return; }
-  setDevStatus('Starting registry…');
-  devPeer = newPeer(REG_ID);
-  devPeer.on('open', () => setDevStatus('Registry online ✔ — watching for games'));
-  devPeer.on('connection', c => c.on('data', d => {
-    if (d && d.t === 'hi') { onPollHi(c, d); return; }
-    if (d && d.t === 'v') { onPollVote(d); return; }
-    if (d && d.t === 'r' && typeof d.pid === 'string' && d.pid.length < 100) regLinks[d.pid] = c; onRegData(d);
-  }));
-  devPeer.on('error', e => {
-    if (e.type === 'unavailable-id') { setDevStatus('Registry already running in another tab/device.'); try { devPeer.destroy(); } catch (_) {} devPeer = null; }
-    else if (e.type === 'peer-unavailable' && giveWait) giveFinish(false, 'is not online right now.');
-    else setDevStatus('Registry error: ' + e.type);
-  });
+  if (!devMode || devAuthed) return;
+  wsConnect();
+  if (!wsOpen) { setDevStatus('Connecting to the game server…'); return; }   // the dev login is sent as soon as the socket opens
+  devAuth();
+}
+function devAuth() {
+  if (!devMode || !wsOpen) return;
+  let k = ''; try { k = localStorage.getItem('stickman_devkey') || ''; } catch (e) {}
+  if (!k) { setDevStatus('Dev key missing: press LOCK DEV MODE, then unlock again with the passcode.'); return; }
+  setDevStatus('Signing in to the game server…'); wsSend({ t: 'devauth', key: k });
+  clearTimeout(devAuthT); devAuthT = setTimeout(() => { if (devMode && !devAuthed) setDevStatus('The game server did not answer the dev login. Deploy the updated game-server/server.js.'); }, 6000);
 }
 function onRegData(d) {
   if (!devMode || !d || d.t !== 'r' || typeof d.mid !== 'string' || typeof d.pid !== 'string' || !d.s || d.mid.length > 200) return;
@@ -2759,15 +2725,12 @@ function startSpectate(mid) {
 function exitSpectate() { spectating = null; $('spec-bar').style.display = 'none'; $('spec-tools').style.display = 'none'; showScreen('screen-menu'); }
 
 /* ----- dev toys: commands sent from the spectating dev to the two players ----- */
-let regLinks = {};                       // player id -> data connection back to that player
 let devBoost = { tg: '', x: 1, until: 0 };
 function toyIds() { const m = liveMatches[spectating]; return m ? m.mid.split('|') : null; }
 function toyTargets(who) { const ids = toyIds(); if (!ids) return []; return who === 'p1' ? [ids[0]] : who === 'p2' ? [ids[1]] : ids; }
 function toyDeliver(pids, cmd) {
-  let n = 0;
-  pids.forEach(pid => { const c = regLinks[pid]; if (c && c.open) { try { c.send(cmd); n++; } catch (e) {} } });
-  $('toy-sent').textContent = n ? 'Sent to ' + n + ' player' + (n > 1 ? 's' : '') + ' ✔' : 'Could not reach that player (they may have an older version of the game).';
-  return n;
+  if (!wsOpen || !devAuthed) { $('toy-sent').textContent = 'Not signed in as dev on the game server.'; return 0; }
+  $('toy-sent').textContent = 'Sending…'; wsSend({ t: 'dcmd', to: pids, d: cmd }); return 1;   // the server answers with how many players it reached
 }
 function toySend(who) {
   const text = $('toy-msg').value.trim().slice(0, 80); if (!text || !spectating) return;
@@ -2900,31 +2863,6 @@ const cleanStr = (v, n) => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u00
 const vid = myVid();
 
 /* ----- player side ----- */
-let pollPeer = null, pollConn = null, pollLastTry = 0;
-function startPollLink() {
-  if (devMode || pollPeer || typeof Peer === 'undefined') return;
-  try {
-    pollPeer = newPeer();
-    pollPeer.on('open', connectPollLink);
-    pollPeer.on('disconnected', () => { try { pollPeer.reconnect(); } catch (e) {} });
-    pollPeer.on('error', () => {});
-  } catch (e) { pollPeer = null; }
-}
-function connectPollLink() {
-  pollLastTry = Date.now();
-  try {
-    pollConn = pollPeer.connect(REG_ID, { reliable: true });
-    pollConn.on('open', () => { try { pollConn.send({ t: 'hi', vid }); } catch (e) {} });
-    pollConn.on('data', onPollMsg); pollConn.on('error', () => {});
-  } catch (e) { pollConn = null; }
-}
-function stopPollLink() { try { pollPeer && pollPeer.destroy(); } catch (e) {} pollPeer = pollConn = null; }
-setInterval(() => {
-  if (devMode || !pollPeer) return;
-  if (pollPeer.destroyed) { pollPeer = pollConn = null; startPollLink(); return; }
-  if (pollPeer.open && (!pollConn || !pollConn.open) && Date.now() - pollLastTry > 15000) connectPollLink();   // dev came online later
-}, 3000);
-
 let curPoll = null, pollHideT = null, votedId = '';
 try { votedId = localStorage.getItem('stickman_voted') || ''; } catch (e) {}
 function onPollMsg(d) {
@@ -2946,9 +2884,7 @@ function showPoll(d) {
 }
 function pollVote(i) {
   if (!curPoll || curPoll.voted >= 0) return;
-  let sent = false;
-  if (devMode) { onPollVote({ vid, id: curPoll.id, o: i }); sent = true; }   // the dev votes straight into their own tally
-  for (const c of [pollConn, regConn]) if (c && c.open) { try { c.send({ t: 'v', vid, id: curPoll.id, o: i }); sent = true; } catch (e) {} }
+  const sent = wsSend({ t: 'v', vid, id: curPoll.id, o: i });
   const body = $('poll-body');
   if (!sent) { body.lastChild.textContent = 'Could not reach the host. Try again.'; return; }
   curPoll.voted = i; votedId = curPoll.id; try { localStorage.setItem('stickman_voted', votedId); } catch (e) {}
@@ -2973,7 +2909,7 @@ function endPollView(d) {
 }
 
 /* ----- dev side ----- */
-let poll = null, pollLinks = {}, pollOptCount = 2, pollInited = false;
+let poll = null, pollOptCount = 2, pollInited = false;
 function pollRenderOpts() {
   const box = $('poll-opts'), old = [...box.querySelectorAll('input')].map(i => i.value); box.textContent = '';
   for (let i = 0; i < pollOptCount; i++) {
@@ -2986,49 +2922,34 @@ function pollRenderOpts() {
 function pollInit() { if (pollInited) return; pollInited = true; pollRenderOpts(); }
 function pollAddOpt() { if (pollOptCount < 4) { pollOptCount++; pollRenderOpts(); } }
 function pollRemOpt() { if (pollOptCount > 2) { pollOptCount--; pollRenderOpts(); } }
-function pollBroadcast(msg) {
-  let n = 0; const seen = new Set();
-  for (const k in pollLinks) { const c = pollLinks[k]; if (c && c.open && !seen.has(c)) { seen.add(c); try { c.send(msg); n++; } catch (e) {} } }
-  for (const k in regLinks) { const c = regLinks[k]; if (c && c.open && !seen.has(c)) { seen.add(c); try { c.send(msg); n++; } catch (e) {} } }   // players in a match
-  return n;
-}
 function pollStart() {
   const q = cleanStr($('poll-q').value, 80), opts = [...$('poll-opts').querySelectorAll('input')].map(i => cleanStr(i.value, 30)).filter(Boolean);
   if (!q || opts.length < 2) { setDevStatus('Poll needs a question and at least 2 options.'); return; }
-  poll = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), q, opts, votes: {}, active: true };
-  const n = pollBroadcast({ t: 'poll', id: poll.id, q, opts });
-  showPoll({ id: poll.id, q, opts });   // the dev sees the same card players see
-  setDevStatus('Poll started · sent to ' + n + ' player' + (n === 1 ? '' : 's') + ' (anyone who joins later gets it too)'); renderPoll();
+  if (!wsOpen || !devAuthed) { setDevStatus('Not signed in as dev on the game server yet.'); return; }
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  poll = { id, q, opts, counts: opts.map(() => 0), active: true };
+  wsSend({ t: 'pollset', id, q, opts }); showPoll({ id, q, opts });   // the dev sees the same card players see
+  setDevStatus('Starting poll\u2026'); renderPoll();
 }
-function pollCounts() { const c = poll.opts.map(() => 0); for (const k in poll.votes) c[poll.votes[k]]++; return c; }
 function pollEnd() {
   if (!poll || !poll.active) { setDevStatus('No poll running.'); return; }
-  poll.active = false;
-  pollBroadcast({ t: 'pollend', id: poll.id, counts: pollCounts() });
-  endPollView({ id: poll.id, counts: pollCounts() });
-  setDevStatus('Poll ended · results sent to players'); renderPoll();
+  if (!wsOpen || !devAuthed) { setDevStatus('Not signed in as dev on the game server yet.'); return; }
+  wsSend({ t: 'pollend', id: poll.id }); setDevStatus('Poll ended \u00b7 results sent to players');
 }
-function onPollHi(c, d) {
-  const v = cleanStr(d.vid, 40); if (!devMode || !v || (!(v in pollLinks) && Object.keys(pollLinks).length > 500)) return;
-  pollLinks[v] = c;
-  if (!c._pl) { c._pl = true; c.on('close', () => { if (pollLinks[v] === c) delete pollLinks[v]; }); }
-  if (poll && poll.active) { try { c.send({ t: 'poll', id: poll.id, q: poll.q, opts: poll.opts }); } catch (e) {} }   // late joiner
-}
-function onPollVote(d) {
-  if (!devMode || !poll || !poll.active || !d || d.id !== poll.id) return;
-  const v = cleanStr(d.vid, 40), o = Math.floor(+d.o);
-  if (!v || !isFinite(o) || o < 0 || o >= poll.opts.length || v in poll.votes || Object.keys(poll.votes).length > 5000) return;
-  poll.votes[v] = o; renderPoll();
+function onPollStat(m) {   // the server keeps the tally, so it survives the dev reloading the page
+  if (!devMode) return;
+  const opts = Array.isArray(m.opts) ? m.opts.slice(0, 4).map(o => cleanStr(o, 30)) : [];
+  poll = { id: cleanStr(m.id, 40), q: cleanStr(m.q, 80), opts, counts: opts.map((_, i) => num(Array.isArray(m.counts) ? m.counts[i] : 0, 0, 0, 1e6)), active: !!m.active };
+  renderPoll();
 }
 function renderPoll() {
   const box = $('poll-live'); if (!box) return; box.textContent = '';
-  const reach = Object.values(pollLinks).filter(c => c && c.open).length, h = document.createElement('div');
-  h.style.cssText = 'color:#ffd400;margin-bottom:.3em';
-  h.textContent = 'Players reachable: ' + reach + (poll ? ' · ' + (poll.active ? 'LIVE' : 'ENDED') : ''); box.appendChild(h);
+  const h = document.createElement('div'); h.style.cssText = 'color:#ffd400;margin-bottom:.3em';
+  h.textContent = 'Players online: ' + (presFresh() ? presData.n : 0) + (poll ? ' \u00b7 ' + (poll.active ? 'LIVE' : 'ENDED') : ''); box.appendChild(h);
   if (!poll) return;
-  const counts = pollCounts(), total = counts.reduce((a, b) => a + b, 0), q = document.createElement('div'); q.style.cssText = 'font-weight:800;margin-bottom:.2em'; q.textContent = poll.q; box.appendChild(q);
+  const counts = poll.counts, total = counts.reduce((a, b) => a + b, 0), q = document.createElement('div'); q.style.cssText = 'font-weight:800;margin-bottom:.2em'; q.textContent = poll.q; box.appendChild(q);
   poll.opts.forEach((t, i) => {
-    const pct = total ? Math.round(counts[i] / total * 100) : 0, r = document.createElement('div'); r.className = 'poll-res'; r.textContent = t + ' · ' + counts[i] + ' (' + pct + '%)';
+    const pct = total ? Math.round(counts[i] / total * 100) : 0, r = document.createElement('div'); r.className = 'poll-res'; r.textContent = t + ' \u00b7 ' + counts[i] + ' (' + pct + '%)';
     const bar = document.createElement('div'); bar.className = 'poll-bar'; const f = document.createElement('div'); f.style.width = pct + '%'; bar.appendChild(f); r.appendChild(bar); box.appendChild(r);
   });
   const t = document.createElement('div'); t.style.color = '#a5adc8'; t.textContent = total + ' vote' + (total === 1 ? '' : 's'); box.appendChild(t);
@@ -3054,7 +2975,6 @@ function renderQueue() {
 setInterval(() => { renderOnline(); renderQueue(); }, 1000);
 renderOnline(); renderQueue();
 setInterval(() => { const b = $('poll-box'); if (b) b.style.top = $('hud').classList.contains('hidden') ? '.6em' : '6.2em'; }, 300);   // top right; drops below the health bars during a fight
-loadPeerLib().then(ok => { if (ok) { if (!devMode) startPollLink(); else startRegistry(); } });
 wsConnect();   // open the link to the game server right away (also wakes it up if it was asleep)
 
 if (devMode) enableDevUI();
@@ -3155,33 +3075,26 @@ setInterval(() => {
    Every signed-in player listens on a personal peer id made from their username. The developer's registry peer connects to it and sends the gift.
    A gift is only accepted from the connection whose peer id is the developer registry id, and coins are only added if that player is online.
    ============================================================ */
-let giveWait = null, userPeer = null, giftSeen = [];
+let giveWait = null, giftSeen = [];
 function giveMsg(t, good) { const m = $('give-msg'); if (m) { m.textContent = t || ''; m.style.color = good ? '#4de3c1' : '#ffd400'; } }
 function giveFinish(ok, text) {
   if (!giveWait) return; const g = giveWait; giveWait = null; clearTimeout(g.timer);
-  try { g.conn && g.conn.close(); } catch (e) {}
-  giveMsg(ok ? '✔ Sent ' + g.amt + ' coins to ' + text : '✖ ' + g.name + ' ' + text, ok);
+  giveMsg(ok ? '\u2714 Sent ' + g.amt + ' coins to ' + text : '\u2716 ' + g.name + ' ' + text, ok);
 }
 function devGiveCoins() {
   if (!devMode) return;
   const name = $('give-user').value.trim(), key = name.toLowerCase(), amt = Math.floor(+$('give-amt').value);
   if (!/^[A-Za-z0-9_]{3,16}$/.test(name)) { giveMsg('Enter their exact username.'); return; }
   if (!isFinite(amt) || amt < 1 || amt > 100000) { giveMsg('Amount must be 1 - 100000.'); return; }
-  if (giveWait) { giveMsg('Still waiting on the last gift…'); return; }
-  if (!devPeer) { startRegistry(); giveMsg('Starting the registry… press SEND again in a few seconds. (' + $('dev-status').textContent + ')'); return; }
-  if (!devPeer.open) { giveMsg('Registry is still connecting. Try again in a few seconds.'); return; }
-  const id = randHex(8); giveWait = { id, name, amt, conn: null, timer: null };
-  giveMsg('Looking for ' + name + '…');
-  try {
-    const c = devPeer.connect('stickman_user_' + key, { reliable: true }); giveWait.conn = c;
-    c.on('open', () => { try { c.send({ t: 'gift', id, amt }); } catch (e) {} });
-    c.on('data', d => { if (d && d.t === 'ack' && d.id === id && giveWait && giveWait.id === id) giveFinish(true, cleanStr(d.name, 16) || name); });
-    c.on('error', () => {});
-    giveWait.timer = setTimeout(() => giveFinish(false, 'did not answer (not online?).'), 8000);
-  } catch (e) { giveFinish(false, 'could not be reached.'); }
+  if (giveWait) { giveMsg('Still waiting on the last gift\u2026'); return; }
+  if (!wsOpen) { giveMsg('Not connected to the game server yet.'); wsConnect(); return; }
+  if (!devAuthed) { giveMsg('Not signed in as dev yet: ' + $('dev-status').textContent); return; }
+  const id = randHex(8);
+  giveWait = { id, name, amt, timer: setTimeout(() => giveFinish(false, 'did not answer (not online?).'), 8000) };
+  giveMsg('Looking for ' + name + '\u2026'); wsSend({ t: 'gift', id, user: key, amt });
 }
-function onGift(c, d) {
-  if (!d || d.t !== 'gift' || c.peer !== REG_ID || !ACCT.session()) return;   // only the developer's registry peer can send gifts
+function onGift(d) {   // the server only forwards gifts that came from an authenticated developer
+  if (!d || d.t !== 'gift' || !ACCT.session()) return;
   const amt = Math.floor(+d.amt), gid = cleanStr(d.id, 40);
   if (!isFinite(amt) || amt < 1 || amt > 100000 || !gid) return;
   if (!giftSeen.includes(gid)) {
@@ -3189,19 +3102,8 @@ function onGift(c, d) {
     playerData.coins = Math.min(99999999, playerData.coins + amt); savePlayer(); updateXPUI();
     showToast('🪙 You received ' + amt + ' coins from the developer!'); try { audio(); SFX.go(); } catch (e) {}
   }
-  try { c.send({ t: 'ack', id: gid, name: ACCT.name }); } catch (e) {}
+  wsSend({ t: 'giftack', id: gid, name: ACCT.name });
 }
-function startUserPeer() {
-  if (userPeer || typeof Peer === 'undefined' || !ACCT.session()) return;
-  let up; try { up = userPeer = newPeer('stickman_user_' + ACCT.session()); } catch (e) { userPeer = null; return; }
-  up.on('connection', c => { c.on('data', d => onGift(c, d)); c.on('error', () => {}); });
-  up.on('disconnected', () => { try { up.reconnect(); } catch (e) {} });
-  up.on('error', e => {   // same account open somewhere else, or the network dropped: try again later
-    if (userPeer !== up) return;
-    try { up.destroy(); } catch (_) {} userPeer = null; setTimeout(startUserPeer, 30000);
-  });
-}
-Promise.all([loadPeerLib(), peerReady()]).then(r => { if (r[0]) startUserPeer(); });
 if (!ACCT.session()) showLogin();
 </script>
 </body>
